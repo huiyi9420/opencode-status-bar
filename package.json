@@ -44,7 +44,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aizen/opencode-status-bar.git"
+    "url": "https://github.com/huiyi9420/opencode-status-bar.git"
   },
   "license": "MIT",
   "peerDependencies": {
