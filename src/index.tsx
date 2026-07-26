@@ -10,8 +10,7 @@ import type {
   TuiThemeCurrent,
 } from "@opencode-ai/plugin/tui"
 import { createMemo, createSignal, onMount, onCleanup, Show, For } from "solid-js"
-import { execSync } from "node:child_process"
-import { readFileSync, readdirSync, writeFileSync, appendFileSync } from "node:fs"
+import { readFileSync, appendFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { PLUGIN_VERSION } from "./_version"
 
@@ -112,7 +111,6 @@ const FALLBACK = {
   muted:   "#7A7A72",
   success: "#9CAF8B",
   warning: "#C5B88D",
-  error:   "#B08A8A",
   border:  "#6B6B63",
 } as const
 
@@ -126,78 +124,8 @@ const DEBUG_LANG = typeof process !== "undefined" ? process.env?.STATUS_BAR_LANG
 const LANG_ZH = DEBUG_LANG ? DEBUG_LANG === "zh" : true
 
 const T = LANG_ZH
-  ? { title: "状态", time: "当前时间", battery: "电池电量" }
-  : { title: "Status", time: "Time", battery: "Battery" }
-
-// ---------------------------------------------------------------------------
-// 电池读取（跨平台）
-// ---------------------------------------------------------------------------
-
-interface BatteryInfo {
-  percent: number | null
-  charging: boolean
-}
-
-function readBattery(): BatteryInfo {
-  try {
-    if (PLATFORM === "darwin") {
-      return readBatteryMacOS()
-    }
-    if (PLATFORM === "linux") {
-      return readBatteryLinux()
-    }
-    if (PLATFORM === "win32") {
-      return readBatteryWindows()
-    }
-  } catch {
-    // 读取失败不影响面板渲染
-  }
-  return { percent: null, charging: false }
-}
-
-function readBatteryMacOS(): BatteryInfo {
-  // pmset -g batt 返回极快（<5ms），execSync 不会阻塞 TUI
-  const out = execSync("pmset -g batt", { timeout: 5000, encoding: "utf-8" })
-  const pctMatch = out.match(/(\d+)%/)
-  const percent = pctMatch ? parseInt(pctMatch[1], 10) : null
-  const charging = /AC Power|charged|charging/i.test(out)
-  return { percent, charging }
-}
-
-function readBatteryLinux(): BatteryInfo {
-  const base = "/sys/class/power_supply"
-  const entries = readdirSync(base)
-  const batName = entries.find((n: string) => n.startsWith("BAT"))
-  if (!batName) return { percent: null, charging: false }
-  const dir = `${base}/${batName}`
-  const pctRaw = readFileSync(`${dir}/capacity`, "utf-8").trim()
-  const percent = parseInt(pctRaw, 10)
-  if (!Number.isFinite(percent)) return { percent: null, charging: false }
-  const status = readFileSync(`${dir}/status`, "utf-8").trim()
-  const charging = status === "Charging"
-  return { percent, charging }
-}
-
-function readBatteryWindows(): BatteryInfo {
-  const out = execSync(
-    'powershell -NoProfile -Command "(Get-WmiObject Win32_Battery).EstimatedChargeRemaining"',
-    { timeout: 5000, encoding: "utf-8" },
-  ).trim()
-  const percent = parseInt(out, 10)
-  if (!Number.isFinite(percent)) return { percent: null, charging: false }
-  return { percent, charging: false }
-}
-
-// ---------------------------------------------------------------------------
-// 时间格式化
-// ---------------------------------------------------------------------------
-
-function formatTime(): string {
-  const now = new Date()
-  const hh = String(now.getHours()).padStart(2, "0")
-  const mm = String(now.getMinutes()).padStart(2, "0")
-  return `${hh}:${mm}`
-}
+  ? { title: "状态" }
+  : { title: "Status" }
 
 // ---------------------------------------------------------------------------
 // 余额查询（通过配置文件定义供应商和查询脚本）
@@ -310,8 +238,6 @@ function StatusBarPanel(props: {
   theme: TuiThemeCurrent
   api: TuiPluginApi
 }): JSX.Element {
-  const [time, setTime] = createSignal(formatTime())
-  const [battery, setBattery] = createSignal<BatteryInfo>({ percent: null, charging: false })
   const [balances, setBalances] = createSignal<BalanceState[]>([])
   const [panelWidth, setPanelWidth] = createSignal(DEFAULT_PANEL_WIDTH)
   const [open, setOpen] = createSignal(true)
@@ -327,19 +253,8 @@ function StatusBarPanel(props: {
       muted:   sat("textMuted", FALLBACK.muted),
       success: sat("success",   FALLBACK.success),
       warning: sat("warning",   FALLBACK.warning),
-      error:   sat("error",     FALLBACK.error),
       border:  sat("border",    FALLBACK.border),
     }
-  })
-
-  // ── 电量颜色编码 ──
-  const batteryColor = createMemo(() => {
-    const b = battery()
-    if (b.percent === null) return pal().muted
-    if (b.charging) return pal().success
-    if (b.percent >= 50) return pal().success
-    if (b.percent >= 20) return pal().warning
-    return pal().error
   })
 
   // ── 分隔线 ──
@@ -372,12 +287,6 @@ function StatusBarPanel(props: {
     return "\u2026" + result // … 省略号
   }
 
-  const batteryText = createMemo(() => {
-    const b = battery()
-    if (b.percent === null) return "--"
-    return `${b.percent}%`
-  })
-
   onMount(() => {
     setPanelWidth(DEFAULT_PANEL_WIDTH)
 
@@ -390,14 +299,6 @@ function StatusBarPanel(props: {
     if (boxEl && typeof boxEl.width === "number" && boxEl.width > 0) {
       setPanelWidth(Math.max(MIN_PANEL_WIDTH, boxEl.width))
     }
-
-    // 立即更新一次
-    setTime(formatTime())
-    setBattery(readBattery())
-
-    // 定时刷新（时间 5s 确保分钟切换及时；电池 60s 足够）
-    const timeTimer = setInterval(() => setTime(formatTime()), 5000)
-    const battTimer = setInterval(() => setBattery(readBattery()), 60000)
 
     // 余额查询（独立定时器，5 分钟刷新）
     const balanceConfigs = readBalanceConfig()
@@ -429,8 +330,6 @@ function StatusBarPanel(props: {
     }
 
     onCleanup(() => {
-      clearInterval(timeTimer)
-      clearInterval(battTimer)
       if (balanceTimer) clearInterval(balanceTimer)
     })
   })
@@ -463,20 +362,6 @@ function StatusBarPanel(props: {
 
       <Show when={open()}>
         <text fg={pal().muted}>{sep()}</text>
-
-        {/* 时间 */}
-        <text>
-          <span style={{ fg: pal().muted }}>{T.time}</span>
-          <span>{" ".repeat(padBetween(T.time, time()))}</span>
-          <span style={{ fg: pal().success }}>{time()}</span>
-        </text>
-
-        {/* 电池 */}
-        <text>
-          <span style={{ fg: pal().muted }}>{T.battery}</span>
-          <span>{" ".repeat(padBetween(T.battery, batteryText()))}</span>
-          <span style={{ fg: batteryColor() }}>{batteryText()}</span>
-        </text>
 
         {/* 余额查询（每个配置项一行） */}
         <For each={balances()}>
